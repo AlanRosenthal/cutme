@@ -1,5 +1,6 @@
 import sys
 from elftools.elf.elffile import ELFFile
+import graphlib
 
 class DWARFData:
     def __init__(self, filename):
@@ -8,6 +9,11 @@ class DWARFData:
             "types": {},
             "typedefs": {},
             "functions": {}
+        }
+        # holds a mapping of names->ids, for convenience
+        self.names = {
+            "types": {},
+            "typedefs": {}
         }
         self.process_file()
 
@@ -42,13 +48,15 @@ class DWARFData:
         elif die.tag == "DW_TAG_base_type":
             name = die.attributes["DW_AT_name"].value.decode("utf-8")
             self.data["types"][die.offset] = name
+            self.names["types"][name] = die.offset
         elif die.tag == "DW_TAG_typedef":
             name = die.attributes["DW_AT_name"].value.decode("utf-8")
             type_id = die.attributes["DW_AT_type"].value
             self.data["typedefs"][die.offset] = {
                 "name": name,
-                "type_id": type_id
+                "reference_type_id": type_id
             }
+            self.names["typedefs"][name] = die.offset
         elif die.tag == "DW_TAG_formal_parameter":
             name = die.attributes["DW_AT_name"].value.decode("utf-8")
             type_id = die.attributes["DW_AT_type"].value
@@ -69,17 +77,87 @@ class DWARFData:
             return self.data["typedefs"][type_id]["name"]
         raise Exception("no type")
 
-    def prettyprint_function(self, fn_name):
-        fn_info = self.data["functions"][fn_name]
-        return_type_name = self.get_type_name(fn_info["return_type_id"])
-        params = ", ".join([f"{dd.get_type_name(param['type'])} {param['name']}" for param in fn_info["params"]])
-        print(f"{return_type_name} {fn_name}({params});")
+    def is_type(self, type_name):
+        return type_name in self.names["types"]
 
-    def get_functions(self):
+    def is_typedef(self, type_name):
+        return type_name in self.names["typedefs"]
+
+    def get_typedef_reference(self, type_name):
+        type_id = self.names["typedefs"][type_name]
+        reference_id = self.data["typedefs"][type_id]["reference_type_id"]
+        reference_name = self.get_type_name(reference_id)
+        return reference_name
+
+    def get_return_type_name(self, fn_name):
+        fn_info = self.data["functions"][fn_name]
+        return self.get_type_name(fn_info["return_type_id"])
+
+    def get_function_param_types(self, fn_name):
+        fn_info = self.data["functions"][fn_name]
+        return [self.get_type_name(param['type']) for param in fn_info["params"]]
+
+    def get_function_string(self, fn_name):
+        fn_info = self.data["functions"][fn_name]
+        return_type_name = self.get_return_type_name(fn_name)
+        params = ", ".join([f"{self.get_type_name(param['type'])} {param['name']}" for param in fn_info["params"]])
+        return f"{return_type_name} {fn_name}({params});"
+
+    def get_list_of_functions(self):
         return self.data["functions"].keys()
 
-if __name__ == '__main__':
-    dd = DWARFData(sys.argv[1])
 
-    for fn in dd.get_functions():
-        dd.prettyprint_function(fn)
+def main(filename):
+    dd = DWARFData(filename)
+
+    params = set()
+    functions = []
+
+    # get a set of all used types, so we can figure out what typedefs we need
+    for fn in dd.get_list_of_functions():
+        for type_name in dd.get_function_param_types(fn):
+            params.add(type_name)
+        params.add(dd.get_return_type_name(fn))
+
+        functions.append(dd.get_function_string(fn))
+
+    # create a dag of all typedefs we can include them in the correct order
+    graph = {}
+    while params:
+        # we only need items the the dag that are typedefs
+        params = set(type_name for type_name in params if dd.is_typedef(type_name))
+        for type_name in params:
+            referenced_type = dd.get_typedef_reference(type_name)
+            graph[type_name] = { referenced_type }
+
+        for type_name, refernece_name_set in graph.items():
+            refernece_name = list(refernece_name_set)[0]
+            # once we add the next typedef, remove it from our list
+            if type_name in params:
+                params.remove(type_name)
+            # if the refereced type is also a typedef, add it our list
+            if dd.is_typedef(refernece_name):
+                params.add(refernece_name)
+
+    # compute DAG
+    dag = tuple(graphlib.TopologicalSorter(graph).static_order())
+
+    # print typedefs in order
+    for type_name in dag:
+        if dd.is_typedef(type_name):
+            refrence_type = dd.get_typedef_reference(type_name)
+            print(f"typedef {refrence_type} {type_name};")
+
+    for fn in functions:
+        print(fn)
+
+    # for type_name, reference_name in graph.items():
+    #     print(f"{type_name} {reference_name}")
+    #     if dd.is_typedef(reference_name):
+    #         print(dd.get_typedef_reference(reference_name))
+    #         graph[reference_name] = dd.get_typedef_reference(reference_name)
+
+    # print(graph)
+
+if __name__ == '__main__':
+    main(sys.argv[1])
