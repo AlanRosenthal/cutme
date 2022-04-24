@@ -97,6 +97,10 @@ class DWARFData:
         fn_info = self.data["functions"][fn_name]
         return [self.get_type_name(param['type']) for param in fn_info["params"]]
 
+    def get_typedef_string(self, type_name):
+        refrence_type = self.get_typedef_reference(type_name)
+        return f"typedef {refrence_type} {type_name};"
+
     def get_function_string(self, fn_name):
         fn_info = self.data["functions"][fn_name]
         return_type_name = self.get_return_type_name(fn_name)
@@ -106,58 +110,45 @@ class DWARFData:
     def get_list_of_functions(self):
         return self.data["functions"].keys()
 
+    def calc_typedef_dag(self):
+        params = set()
+        for fn in self.get_list_of_functions():
+            for type_name in self.get_function_param_types(fn):
+                params.add(type_name)
+            params.add(self.get_return_type_name(fn))
+
+        # create a dag of all typedefs we can include them in the correct order
+        graph = {}
+        while params:
+            # we only need items the the dag that are typedefs
+            params = set(type_name for type_name in params if self.is_typedef(type_name))
+            for type_name in params:
+                referenced_type = self.get_typedef_reference(type_name)
+                graph[type_name] = { referenced_type }
+
+            for type_name, refernece_name_set in graph.items():
+                refernece_name = list(refernece_name_set)[0]
+                # once we add the next typedef, remove it from our list
+                if type_name in params:
+                    params.remove(type_name)
+                # if the refereced type is also a typedef, add it our list
+                if self.is_typedef(refernece_name):
+                    params.add(refernece_name)
+
+        # compute DAG
+        dag = tuple(graphlib.TopologicalSorter(graph).static_order())
+        return (type_name for type_name in dag if self.is_typedef(type_name))
 
 def main(filename):
     dd = DWARFData(filename)
 
-    params = set()
-    functions = []
+    # print typedefs in order
+    for type_name in dd.calc_typedef_dag():
+        print(dd.get_typedef_string(type_name))
 
     # get a set of all used types, so we can figure out what typedefs we need
     for fn in dd.get_list_of_functions():
-        for type_name in dd.get_function_param_types(fn):
-            params.add(type_name)
-        params.add(dd.get_return_type_name(fn))
-
-        functions.append(dd.get_function_string(fn))
-
-    # create a dag of all typedefs we can include them in the correct order
-    graph = {}
-    while params:
-        # we only need items the the dag that are typedefs
-        params = set(type_name for type_name in params if dd.is_typedef(type_name))
-        for type_name in params:
-            referenced_type = dd.get_typedef_reference(type_name)
-            graph[type_name] = { referenced_type }
-
-        for type_name, refernece_name_set in graph.items():
-            refernece_name = list(refernece_name_set)[0]
-            # once we add the next typedef, remove it from our list
-            if type_name in params:
-                params.remove(type_name)
-            # if the refereced type is also a typedef, add it our list
-            if dd.is_typedef(refernece_name):
-                params.add(refernece_name)
-
-    # compute DAG
-    dag = tuple(graphlib.TopologicalSorter(graph).static_order())
-
-    # print typedefs in order
-    for type_name in dag:
-        if dd.is_typedef(type_name):
-            refrence_type = dd.get_typedef_reference(type_name)
-            print(f"typedef {refrence_type} {type_name};")
-
-    for fn in functions:
-        print(fn)
-
-    # for type_name, reference_name in graph.items():
-    #     print(f"{type_name} {reference_name}")
-    #     if dd.is_typedef(reference_name):
-    #         print(dd.get_typedef_reference(reference_name))
-    #         graph[reference_name] = dd.get_typedef_reference(reference_name)
-
-    # print(graph)
+        print(dd.get_function_string(fn))
 
 if __name__ == '__main__':
     main(sys.argv[1])
