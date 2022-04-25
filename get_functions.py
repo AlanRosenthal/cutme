@@ -41,8 +41,12 @@ class DWARFData:
             return_type_id = die.attributes["DW_AT_type"].value
             self.data["functions"][name] = {
                 "return_type_id": return_type_id,
-                "params": []
+                "params": [],
+                "prototype": None,
+                "declaration": False,
             }
+            if "DW_AT_declaration" in die.attributes:
+                self.data["functions"][name]["declaration"] = True
             # children of this tag that are DW_TAG_formal_parameter need to know which function to assign themselves to
             stack=name
         elif die.tag == "DW_TAG_base_type":
@@ -58,6 +62,7 @@ class DWARFData:
             }
             self.names["typedefs"][name] = die.offset
         elif die.tag == "DW_TAG_formal_parameter":
+            print(die.attributes.keys())
             name = die.attributes["DW_AT_name"].value.decode("utf-8")
             type_id = die.attributes["DW_AT_type"].value
             self.data["functions"][stack]["params"].append({
@@ -103,9 +108,15 @@ class DWARFData:
 
     def get_function_string(self, fn_name):
         fn_info = self.data["functions"][fn_name]
-        return_type_name = self.get_return_type_name(fn_name)
-        params = ", ".join([f"{self.get_type_name(param['type'])} {param['name']}" for param in fn_info["params"]])
-        return f"{return_type_name} {fn_name}({params});"
+        if not fn_info["prototype"]:
+            return_type_name = self.get_return_type_name(fn_name)
+            params = ", ".join([f"{self.get_type_name(param['type'])} {param['name']}" for param in fn_info["params"]])
+            fn_info["prototype"] = f"{return_type_name} {fn_name}({params});"
+        return fn_info["prototype"]
+
+    def is_function_declaration(self, fn_name):
+        fn_info = self.data["functions"][fn_name]
+        return fn_info["declaration"]
 
     def get_list_of_functions(self):
         return self.data["functions"].keys()
@@ -148,7 +159,7 @@ def main(filename):
 
     # get a set of all used types, so we can figure out what typedefs we need
     for fn in dd.get_list_of_functions():
-        print(dd.get_function_string(fn))
+        print(f"{dd.get_function_string(fn)} {'needs mock' if dd.is_function_declaration(fn) else ''}")
 
 if __name__ == '__main__':
     main(sys.argv[1])
